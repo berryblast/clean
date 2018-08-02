@@ -1,5 +1,11 @@
 import pytest
-from validators import validate_dns, validate_dashboard, validate_storage, validate_ingress
+from validators import (
+    validate_dns,
+    validate_dashboard,
+    validate_storage,
+    validate_ingress,
+    validate_istio
+)
 from utils import microk8s_enable, wait_for_pod_state, microk8s_disable, microk8s_reset
 from subprocess import Popen, PIPE, STDOUT
 
@@ -56,7 +62,7 @@ class TestAddons(object):
         validate_storage()
         print("Disabling storage")
         p = Popen("/snap/bin/microk8s.disable storage".split(), stdout=PIPE, stdin=PIPE, stderr=STDOUT)
-        disable = p.communicate(input=b'Y')[0]
+        p.communicate(input=b'Y\n')[0]
 
     def test_ingress(self):
         """
@@ -69,3 +75,16 @@ class TestAddons(object):
         validate_ingress()
         print("Disabling ingress")
         microk8s_disable("ingress")
+
+    def test_istio(self):
+        """
+        Sets up and validate istio.
+
+        """
+        print("Enabling Istio")
+        p = Popen("/snap/bin/microk8s.enable istio".split(), stdout=PIPE, stdin=PIPE, stderr=STDOUT)
+        p.communicate(input=b'N\n')[0]
+        print("Validating Istio")
+        validate_istio()
+        print("Disabling Istio")
+        microk8s_disable("istio")

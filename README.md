@@ -65,6 +65,7 @@ You can find the addon manifests and/or scripts under `${SNAP}/actions/`, with `
 - **dashboard**: Deploy kubernetes dashboard as well as grafana and influxdb. To access grafana point your browser to the url reported by `microk8s.kubectl cluster-info`.
 - **storage**: Create a default storage class. This storage class makes use of the hostpath-provisioner pointing to a directory on the host. Persistent volumes are created under `${SNAP_COMMON}/default-storage`. Upon disabling this addon you will be asked if you want to delete the persistent volumes created.
 - **ingress**: Create an ingress controller.
+- **istio**: Deploy the core Istio services. You can use the `microk8s.istioctl` command to mange your deployments.
 
 ### Stopping and Restarting microk8s
 
