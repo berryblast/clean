@@ -88,3 +88,5 @@ class TestAddons(object):
         validate_istio()
         print("Disabling Istio")
         microk8s_disable("istio")
+        print("Disabling DNS")
+        microk8s_disable("dns")
