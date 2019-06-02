@@ -1,7 +1,11 @@
-#!/bin/sh
+#!/bin/bash
+
+
 export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:$PATH"
 export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$SNAP/lib:$SNAP/usr/lib:$SNAP/lib/x86_64-linux-gnu:$SNAP/usr/lib/x86_64-linux-gnu"
 export LD_LIBRARY_PATH=$SNAP_LIBRARY_PATH:$LD_LIBRARY_PATH
+
+source $SNAP/actions/common/utils.sh
 
 if echo "$*" | grep -q -- '--help'; then
     prog=$(basename -s.wrapper "$0" | tr - .)
@@ -11,7 +15,7 @@ if echo "$*" | grep -q -- '--help'; then
     echo
     echo "Available addons:"
     echo
-    actions="$(find "${SNAP}/actions" -name '*.yaml' -or -name 'enable.*.sh')"
+    actions="$(find "${SNAP}/actions" -maxdepth 1 -name '*.yaml' -or -name 'enable.*.sh')"
     actions="$(echo "$actions" | sed -e 's/.*[/.]\([^.]*\)\..*/\1/' | sort | uniq)"
     for action in $actions; do
         echo "  $action"
@@ -19,15 +23,38 @@ if echo "$*" | grep -q -- '--help'; then
     exit
 fi
 
-for action in "$@"; do
+exit_if_stopped
+result=1
+for addon in "$@"; do
+
+  action="$(addon_name $addon)"
+  arguments="$(addon_arguments $addon)"
   # If there is a script to execute for the $action run the script and ignore any yamls
   if [ -f "${SNAP}/actions/enable.$action.sh" ]; then
-    "${SNAP}/actions/enable.$action.sh"
+    
+    "${SNAP}/actions/enable.$action.sh" "${arguments}"
+    enable_result="$?"
+    if [ "$enable_result" = "0" ]
+    then
+      result=0
+    else
+      echo "Failed to enable $action"
+      exit 1
+    fi
   elif [ -f "${SNAP}/actions/$action.yaml" ]; then
     echo "Enabling $action"
-    "$SNAP/kubectl" "--kubeconfig=$SNAP/client.config" "apply" "-f" "${SNAP}/actions/$action.yaml"
-    echo "$action enabled"
+    use_manifest $action apply
+    if [ "$use_manifest_result" = "0" ]
+    then
+      echo "$action enabled"
+      result=0
+    else
+      echo "Failed to enable $action"
+      exit 1
+    fi
   else
     echo "Nothing to do for $action"
+    exit 2
   fi
 done
+exit $result

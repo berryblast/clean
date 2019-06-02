@@ -3,8 +3,14 @@ version-script: |
   . build-scripts/prepare-env.sh > /dev/null
   echo $KUBE_VERSION
 version: "latest"
-summary: Kubernetes in your box.
-description: Microk8s deploys and configures all kubernetes services in a snap.
+summary: Kubernetes for workstations and appliances
+description: |-
+ MicroK8s is a small, fast, secure, single node Kubernetes that installs on
+ just about any Linux box. Use it for offline development, prototyping, 
+ testing, or use it on a VM as a small, cheap, reliable k8s for CI/CD. It's 
+ also a great k8s for appliances - develop your IoT apps for k8s and deploy 
+ them to MicroK8s on your boxes.
+
 grade: stable
 confinement: classic
 
@@ -12,11 +18,14 @@ apps:
   daemon-etcd:
     command: run-etcd-with-args
     daemon: simple
-  daemon-docker:
-    command: run-docker-with-args
+  daemon-containerd:
+    command: run-containerd-with-args
     daemon: simple
   daemon-apiserver:
     command: run-with-config-args kube-apiserver
+    daemon: simple
+  daemon-apiserver-kicker:
+    command: apiservice-kicker
     daemon: simple
   daemon-controller-manager:
     command: run-with-config-args kube-controller-manager
@@ -31,15 +40,31 @@ apps:
     command: run-with-config-args kube-proxy
     daemon: simple
   kubectl:
-    command: kubectl --kubeconfig=$SNAP/client.config
+    command: microk8s-kubectl.wrapper
+    completer: kubectl.bash
+  ctr:
+    command: microk8s-ctr.wrapper
+  inspect:
+    command: sudo SNAP_DATA=${SNAP_DATA} ${SNAP}/inspect.sh
   enable:
     command: microk8s-enable.wrapper
   disable:
     command: microk8s-disable.wrapper
+  start:
+    command: microk8s-start.wrapper
+  stop:
+    command: microk8s-stop.wrapper
+  status:
+    command: microk8s-status.wrapper
   config:
     command: microk8s-config.wrapper
   reset:
     command: microk8s-reset.wrapper
+  istioctl:
+    command: microk8s-istioctl.wrapper
+    completer: istioctl.bash
+  linkerd:
+    command: microk8s-linkerd.wrapper
 
 parts:
   libnftnl:
@@ -64,31 +89,76 @@ parts:
     - "--disable-shared"
     - "--enable-static"
     prime: [ -bin/iptables-xml ]
-  docker:
-    after: [iptables]
-    plugin: dump
+  go:
+    source-tag: go1.10.4
+  containerd:
+    after: [go, iptables]
+    source: .
+    plugin: go
+    go-importpath: github.com/containerd/containerd
+    build-packages:
+    - btrfs-tools
+    - libseccomp-dev
+    override-build: |
+      set -eu
+      . build-scripts/prepare-env.sh
+
+      go version
+      export GOPATH=$(realpath ../go)
+      mkdir -p $SNAPCRAFT_PART_INSTALL/bin
+      # Build containerd
+      go get github.com/containerd/containerd
+      (
+        cd $GOPATH/src/github.com/containerd/containerd
+        git checkout ${CONTAINERD_COMMIT}
+        # building the btrfs driver can be disabled via the
+        # build tag no_btrfs, removing this dependency
+        make
+      )
+      cp $GOPATH/src/github.com/containerd/containerd/bin/* $SNAPCRAFT_PART_INSTALL/bin/
+      rm $SNAPCRAFT_PART_INSTALL/bin/containerd-stress
+
+      # Build runc
+      go get github.com/opencontainers/runc
+      (
+        cd $GOPATH/src/github.com/opencontainers/runc
+        git checkout ${RUNC_COMMIT}
+        make BUILDTAGS='seccomp apparmor'
+      )
+      cp $GOPATH/src/github.com/opencontainers/runc/runc $SNAPCRAFT_PART_INSTALL/bin/
+
+      # Assemble the snap
+      # snapcraftctl build
+    organize:
+      containerd/install/bin/*: bin/
     stage-packages:
     - conntrack
-    - docker.io
     - aufs-tools
     - gawk
     - sed
-    source: .
+    - socat
+    - grep
+    - libssl1.0.0
+    - coreutils
+    - hostname
     stage:
     - -sbin/xtables-multi
     - -sbin/iptables*
     - -lib/xtables
-    override-build: "true"
   microk8s:
-    after: [docker]
+    after: [containerd]
     plugin: dump
     build-attributes: [no-patchelf]
     build-packages:
-    - curl
     - openssl
     - file
+    - dpkg
     stage-packages:
+    - curl      
+    - net-tools
     - util-linux
+    - zfsutils-linux
+    - iproute2
     source: .
     override-build: |
       set -eu
@@ -104,15 +174,15 @@ parts:
       cp -r $KUBE_SNAP_ROOT/microk8s-resources/default-args .
 
       echo "Building certs"
-      build-scripts/build-certs.sh
+      cp -r $KUBE_SNAP_ROOT/microk8s-resources/certs .
       cp -r $KUBE_SNAP_ROOT/microk8s-resources/certs-beta .
 
       echo "Preparing cni"
       mkdir -p opt/cni/bin/
       cp $KUBE_SNAP_BINS/cni/* opt/cni/bin/
 
-      echo "Preparing dockerd"
-      cp $KUBE_SNAP_ROOT/microk8s-resources/docker-profile .
+      echo "Preparing containerd"
+      cp $KUBE_SNAP_ROOT/microk8s-resources/containerd-profile .
 
       echo "Preparing etcd"
       cp $KUBE_SNAP_BINS/etcd/etcd .
@@ -120,7 +190,9 @@ parts:
 
       echo "Preparing kube-apiserver"
       cp $KUBE_SNAP_BINS/$KUBE_ARCH/kube-apiserver .
-      cp $KUBE_SNAP_ROOT/microk8s-resources/known_token.csv .
+      # Old versions will be pointing to these .csv files from inside their kube-apiserver config
+      # Keep them around for a couple of releases.
+      touch known_token.csv
       cp $KUBE_SNAP_ROOT/microk8s-resources/basic_auth.csv .
 
       echo "Preparing kube-controller-manager"
@@ -143,10 +215,120 @@ parts:
 
       echo "Preparing user config"
       cp $KUBE_SNAP_ROOT/microk8s-resources/client.config .
+      cp $KUBE_SNAP_ROOT/microk8s-resources/client.config.template .
 
       echo "Creating commands and wrappers"
       cp $KUBE_SNAP_ROOT/microk8s-resources/wrappers/* .
-      #TODO(kjackal): yaml manifests may need to be rendered to match the $SNAP_ARCH
+
       cp -r $KUBE_SNAP_ROOT/microk8s-resources/actions .
+      if [ "${ARCH}" = "arm64" ]
+      then
+        # Some actions are not available on arm64
+        # Nvidia support
+        rm "actions/enable.gpu.sh"
+        rm "actions/disable.gpu.sh"
+        rm "actions/gpu.yaml"
+        # Istio support
+        rm "actions/enable.istio.sh"
+        rm "actions/disable.istio.sh"
+        # added because the completer is still defined
+        touch istioctl.bash
+        # Prometheus support
+        rm "actions/enable.prometheus.sh"
+        rm "actions/disable.prometheus.sh"
+        rm -rf "actions/prometheus"
+        # Fluentd support
+        rm "actions/enable.fluentd.sh"
+        rm "actions/disable.fluentd.sh"
+        rm -rf "actions/fluentd"
+        # Jeager support
+        rm "actions/enable.jaeger.sh"
+        rm "actions/disable.jaeger.sh"
+        rm -rf "actions/jaeger"
+        # Linkerd support
+        rm "actions/enable.linkerd.sh"
+        rm "actions/disable.linkerd.sh"
+      else
+        # Istio addon
+        echo "Preparing istio"
+        cp $KUBE_SNAP_BINS/istioctl .
+        cp -r $KUBE_SNAP_BINS/istio-yaml ./actions/istio
+        # Add bash completion for istioctl. This is located here to make sure it is only added when istio is added.
+        ./istioctl collateral completion --bash -o .
+        sed -i  "s/complete -o default -F __start_istioctl istioctl/complete -o default -F __start_istioctl microk8s.istioctl/g" istioctl.bash
+        sed -i  "s/complete -o default -F __start_istioctl istioctl/complete -o default -o nospace -F __start_istioctl microk8s.istioctl/g" istioctl.bash
+      fi
+
+      echo "Creating inspect hook"
+      cp $KUBE_SNAP_ROOT/scripts/inspect.sh .
+
+      # Add bash completion for microk8s.kubectl. 
+      ./kubectl completion bash | sed "s/complete -o default -F __start_kubectl kubectl/complete -o default -F __start_kubectl microk8s.kubectl/g" | sed "s/complete -o default -o nospace -F __start_kubectl kubectl/complete -o default -o nospace -F __start_kubectl kubectl/g" > kubectl.bash
 
       snapcraftctl build
+
+  # Unfortunately we cannot add package repositories to our snaps
+  # https://forum.snapcraft.io/t/proposal-additional-package-sources/2199
+  # We handpick the debs we need.
+  # To update these debs add the repository
+  # Follow the instructions in https://github.com/NVIDIA/nvidia-docker and
+  # install the https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list repo.
+  # Use apt-cache show <package> to make sure
+  # a) the dockerd we ship in this snap is supported by nvidia-container-runtime
+  # b) the version dependencies of each package is met.
+  nvidia-runtime:
+    plugin: dump
+    source: https://nvidia.github.io/nvidia-container-runtime/ubuntu16.04/amd64/nvidia-container-runtime_2.0.0+docker18.06.1-1_amd64.deb
+    source-type: deb
+    override-build: |
+      set -eu
+      ARCH=$(dpkg --print-architecture)
+      if ! [ "${ARCH}" = "arm64" ]
+      then
+        snapcraftctl build
+      else
+        echo "Skipped"
+      fi
+
+  nvidia-runtime-hook:
+    plugin: dump
+    source: https://nvidia.github.io/nvidia-container-runtime/ubuntu16.04/amd64/nvidia-container-runtime-hook_1.4.0-1_amd64.deb
+    source-type: deb
+    override-build: |
+      set -eu
+      ARCH=$(dpkg --print-architecture)
+      if ! [ "${ARCH}" = "arm64" ]
+      then
+        snapcraftctl build
+      else
+        echo "Skipped"
+      fi
+
+  libnvidia:
+    plugin: dump
+    source: https://nvidia.github.io/libnvidia-container/ubuntu16.04/amd64/libnvidia-container1_1.0.0-1_amd64.deb
+    source-type: deb
+    override-build: |
+      set -eu
+      ARCH=$(dpkg --print-architecture)
+      if ! [ "${ARCH}" = "arm64" ]
+      then
+        snapcraftctl build
+      else
+        echo "Skipped"
+      fi
+
+  libnvidia-tools:
+    plugin: dump
+    source: https://nvidia.github.io/libnvidia-container/ubuntu16.04/amd64/libnvidia-container-tools_1.0.0-1_amd64.deb
+    source-type: deb
+    override-build: |
+      set -eu
+      ARCH=$(dpkg --print-architecture)
+      if ! [ "${ARCH}" = "arm64" ]
+      then
+        snapcraftctl build
+      else
+        echo "Skipped"
+      fi
+

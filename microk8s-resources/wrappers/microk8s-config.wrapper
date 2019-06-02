@@ -2,6 +2,10 @@
 
 set -eu
 
+export PATH="$SNAP/usr/sbin:$SNAP/usr/bin:$SNAP/sbin:$SNAP/bin:$PATH"
+
+source $SNAP/actions/common/utils.sh
+
 USE_LOOPBACK=false
 PARSED=$(getopt --options=lho: --longoptions=use-loopback,help,output: --name "$@" -- "$@")
 eval set -- "$PARSED"
@@ -33,9 +37,8 @@ while true; do
 done
 
 if [[ "$USE_LOOPBACK" == "true" ]]; then
-    cat "$SNAP/client.config"
+    cat "$SNAP_DATA/credentials/client.config"
 else
-    DEFAULT_INTERFACE="$(netstat -rn | grep '^0.0.0.0' | awk '{print $NF}')"
-    IP_ADDR="$(ifconfig "$DEFAULT_INTERFACE" | grep 'inet ' | "$SNAP/usr/bin/gawk" '{print $2}' | "$SNAP/bin/sed" -e 's/addr://')"
-    "$SNAP/bin/sed" -e "s/127.0.0.1/$IP_ADDR/" "$SNAP/client.config"
+    IP_ADDR="$(get_default_ip)"
+    "$SNAP/bin/sed" -e "s/127.0.0.1/$IP_ADDR/" "$SNAP_DATA/credentials/client.config"
 fi

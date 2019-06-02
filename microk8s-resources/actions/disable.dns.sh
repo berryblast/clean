@@ -2,26 +2,35 @@
 
 set -e
 
-skip_opt_in_config() {
-    # remove an option inside the config file.
-    # argument $1 is the option to be removed
-    # argument $2 is the configuration file under $SNAP_DATA/args
-    opt="--$1"
-    config_file="$SNAP_DATA/args/$2"
-    sudo "${SNAP}/bin/sed" -i '/'"$opt"'/d' "${config_file}"
-}
+source $SNAP/actions/common/utils.sh
 
 echo "Disabling DNS"
 echo "Reconfiguring kubelet"
+KUBECTL="$SNAP/kubectl --kubeconfig=$SNAP/client.config"
+
+# Delete the dns yaml
+# We need to wait for the dns pods to terminate before we restart kubelet
+echo "Removing DNS manifest"
+use_manifest dns delete
+sleep 15
+timeout=30
+start_timer="$(date +%s)"
+while ($KUBECTL get po -n kube-system | grep -z " Terminating") &> /dev/null
+do
+  now="$(date +%s)"
+  if [[ "$now" > "$(($start_timer + $timeout))" ]] ; then
+    break
+  fi
+  sleep 5
+done
 
 skip_opt_in_config "cluster-domain" kubelet
 skip_opt_in_config "cluster-dns" kubelet
 sudo systemctl restart snap.${SNAP_NAME}.daemon-kubelet
-sleep 5
-
-# Apply the dns yaml
-# We do not need to see dns pods running at this point just give some slack
-echo "Removing DNS manifest"
-"$SNAP/kubectl" "--kubeconfig=$SNAP/client.config" "delete" "-f" "${SNAP}/actions/dns.yaml"
-
+kubelet=$(wait_for_service kubelet)
+if [[ $kubelet == fail ]]
+then
+  echo "Kubelet did not start on time. Proceeding."
+fi
+sleep 15
 echo "DNS is disabled"
